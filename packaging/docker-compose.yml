@@ -1,0 +1,15 @@
+# docker compose -f packaging/docker-compose.yml up -d
+services:
+  cbapick4me:
+    build:
+      context: ..
+      dockerfile: packaging/Dockerfile
+    env_file: ../.env
+    ports:
+      - "127.0.0.1:8080:8080"   # expose only to the reverse proxy on this host
+    volumes:
+      - cbapick-cache:/data
+    restart: unless-stopped
+
+volumes:
+  cbapick-cache:

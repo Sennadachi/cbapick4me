@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cbapick4me"
+version = "0.1.0"
+description = "Pick specific capacitors and resistors for an EasyEDA BOM from DigiKey"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31",
+    "platformdirs>=4",
+    "textual>=0.80",
+    "nicegui>=3",
+]
+
+[project.urls]
+Homepage = "https://github.com/Sennadachi/cbapick4me"
+Issues = "https://github.com/Sennadachi/cbapick4me/issues"
+Releases = "https://github.com/Sennadachi/cbapick4me/releases"
+
+[project.optional-dependencies]
+desktop = ["pywebview>=5"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "pyinstaller>=6"]
+
+[project.scripts]
+cbapick4me = "cbapick4me.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["cbapick4me*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# GUI tests register pages themselves rather than importing a main file.
+main_file = ""

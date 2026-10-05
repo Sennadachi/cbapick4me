@@ -1,0 +1,51 @@
+name: Release
+
+# Push a tag like v0.2.0 to build the Windows exe and publish it as a GitHub Release.
+# "Run workflow" (manual) builds the exe and keeps it as a workflow artifact only.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ".[desktop,dev]"
+      - run: python -m pytest -q
+      - run: nicegui-pack --onefile --windowed --name cbapick4me packaging\launch.py
+      - name: Name the exe after the version
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { "dev-$($env:GITHUB_SHA.Substring(0,7))" }
+          $exe = "cbapick4me-$tag-windows-x64.exe"
+          Move-Item dist\cbapick4me.exe "dist\$exe"
+          $hash = (Get-FileHash "dist\$exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $exe" | Out-File -Encoding ascii "dist\$exe.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cbapick4me-windows
+          path: dist/cbapick4me-*
+      - if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/cbapick4me-*
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **Windows:** download `cbapick4me-${{ github.ref_name }}-windows-x64.exe` below and double-click it. There's nothing to install.
+            Windows SmartScreen may warn about it because the exe isn't code-signed: click **More info → Run anyway**.
+            Full guide: [docs/windows.md](https://github.com/${{ github.repository }}/blob/main/docs/windows.md)
+
+            **Linux / macOS:** `pipx install "git+https://github.com/${{ github.repository }}@${{ github.ref_name }}"`
+            Full guide: [docs/linux.md](https://github.com/${{ github.repository }}/blob/main/docs/linux.md)
+
+            You need your own free DigiKey API key: [docs/api-key.md](https://github.com/${{ github.repository }}/blob/main/docs/api-key.md). Never share it.

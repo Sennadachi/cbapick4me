@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# cba2pick — fuzzy-find a BOM CSV with fzf and open it in cbapick4me.
+#
+#   cba2pick                 pick from ~/Documents and ~/Downloads (newest first)
+#   cba2pick wayfinder       start fzf with that search; opens directly if only one match
+#   cba2pick --gui           any option starting with "-" is passed to cbapick4me
+#   cba2pick path/to/BOM.csv skip the picker
+#
+# Search folders: CBAPICK_DIRS="$HOME/Documents $HOME/Downloads $HOME/Projects"
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+APP_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
+# A clone's own .venv wins; otherwise use cbapick4me from PATH (e.g. a pipx install).
+BIN="$APP_DIR/.venv/bin/cbapick4me"
+[[ -x $BIN ]] || BIN="$(command -v cbapick4me || true)"
+
+# fzf preview helper: show the start of a BOM, decoding EasyEDA's UTF-16 exports.
+if [[ ${1:-} == "--_preview" ]]; then
+    f="${2/#\~/$HOME}"
+    if file -b "$f" | grep -q "UTF-16"; then iconv -f UTF-16 -t UTF-8 "$f"; else cat "$f"; fi |
+        head -n 60 | sed 's/\t/  │  /g'
+    exit 0
+fi
+
+if [[ -z $BIN ]]; then
+    echo "cba2pick: cbapick4me is not installed. Install it with:" >&2
+    echo "  pipx install \"git+https://github.com/Sennadachi/cbapick4me\"" >&2
+    exit 1
+fi
+
+app_args=()
+query=()
+file=""
+for arg in "$@"; do
+    if [[ $arg == -* ]]; then
+        app_args+=("$arg")
+    elif [[ -f $arg ]]; then
+        file="$arg"
+    else
+        query+=("$arg")
+    fi
+done
+[[ -n $file ]] && exec "$BIN" "${app_args[@]}" "$file"
+
+command -v fzf >/dev/null || { echo "cba2pick: fzf is not installed" >&2; exit 1; }
+
+read -r -a dirs <<<"${CBAPICK_DIRS:-$HOME/Documents $HOME/Downloads}"
+search=()
+for d in "${dirs[@]}"; do [[ -d $d ]] && search+=("$d"); done
+[[ ${#search[@]} -gt 0 ]] || { echo "cba2pick: none of these folders exist: ${dirs[*]}" >&2; exit 1; }
+
+# CSV/TSV files, newest first, skipping hidden folders and our own *_picked4u.csv output.
+list_boms() {
+    find "${search[@]}" -path '*/.*' -prune -o -type f \( -iname '*.csv' -o -iname '*.tsv' \) \
+        ! -iname '*_picked4u.csv' -printf '%T@\t%p\n' 2>/dev/null |
+        sort -rn | cut -f2- | sed "s|^$HOME|~|"
+}
+
+choice="$(
+    list_boms | fzf \
+        --prompt 'BOM> ' \
+        --header 'Pick an EasyEDA BOM  (Enter = open, Esc = cancel)' \
+        --query "${query[*]}" \
+        --select-1 --exit-0 \
+        --height 80% --layout reverse --border \
+        --preview "$SELF --_preview {}" \
+        --preview-window 'right,60%,wrap'
+)" || true
+
+if [[ -z $choice ]]; then
+    [[ ${#query[@]} -gt 0 ]] && echo "cba2pick: no BOM matching '${query[*]}' in ${search[*]}" >&2
+    exit 1
+fi
+
+exec "$BIN" "${app_args[@]}" "${choice/#\~/$HOME}"

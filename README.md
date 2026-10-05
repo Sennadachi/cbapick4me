@@ -6,6 +6,8 @@ Your schematic says "10u, C1206" and "4.7k, R0603". cbapick4me turns those into 
 
 [![cbapick4me demo video](https://img.youtube.com/vi/JGXSiaPnGtc/maxresdefault.jpg)](https://www.youtube.com/watch?v=JGXSiaPnGtc)
 
+*Click the preview to view the video.*
+
 1. **Load** the BOM CSV.
    - EasyEDA Standard and Pro exports are recognised automatically. This is the default.
    - For any other EDA tool, switch on **Custom CSV** and choose which column holds the designator, value, footprint and so on. Your choices are remembered, and you can save them as named presets. See [Other EDA tools](docs/usage.md#other-eda-tools-custom-csv).

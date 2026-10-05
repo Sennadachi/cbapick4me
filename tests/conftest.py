@@ -16,6 +16,12 @@ def wayfinder_bytes() -> bytes:
 def isolated_config(tmp_path, monkeypatch):
     """Never read the developer's real config, .env or API keys during tests."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    # XDG_CONFIG_HOME only counts on Linux; pin the config dir on Windows/macOS too.
+    import cbapick4me.core.config as config
+    import cbapick4me.core.formats as formats
+
+    for mod in (config, formats):
+        monkeypatch.setattr(mod, "user_config_dir", lambda *a, **k: str(tmp_path / "config" / "cbapick4me"))
     monkeypatch.setenv("CBAPICK_CACHE_DIR", str(tmp_path / "cache"))
     for var in ("DIGIKEY_CLIENT_ID", "DIGIKEY_CLIENT_SECRET"):
         monkeypatch.delenv(var, raising=False)

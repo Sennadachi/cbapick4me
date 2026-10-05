@@ -26,10 +26,12 @@ from textual.widgets import (
     ProgressBar,
     Select,
     Static,
+    Switch,
 )
 from textual.widgets.option_list import Option
 
-from ..core.bom import BomError
+from ..core.bom import BomError, parse_bom, read_table
+from ..core.formats import DELIMITERS, ROLES, CsvFormat, load_formats, prefill, save_formats
 from ..core.config import SITE_CURRENCY, Config, load_config, save_config
 from ..core.parse import Kind, format_value
 from ..core.padding import ALREADY_MET, UNREACHABLE
@@ -56,12 +58,18 @@ class BomTree(DirectoryTree):
 
 
 class OpenScreen(Screen):
-    BINDINGS = [Binding("ctrl+k", "keys", "API keys")]
+    BINDINGS = [
+        Binding("ctrl+k", "keys", "API keys"),
+        Binding("ctrl+t", "toggle_custom", "Custom CSV on/off"),
+    ]
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="open"):
-            yield Label("Open an EasyEDA BOM (.csv). Type a path or pick from the tree.")
+            yield Label("Open a BOM (.csv). Type a path or pick from the tree.")
+            with Horizontal(id="mode"):
+                yield Switch(self.app.custom, id="custom")
+                yield Label("Custom CSV columns: off = EasyEDA export, on = choose the columns of any EDA tool's CSV")
             yield Input(placeholder="path/to/BOM.csv", id="path")
             yield BomTree(Path.cwd(), id="tree")
         yield Footer()
@@ -76,6 +84,14 @@ class OpenScreen(Screen):
 
     def action_keys(self) -> None:
         self.app.push_screen(KeysModal())
+
+    def action_toggle_custom(self) -> None:
+        switch = self.query_one("#custom", Switch)
+        switch.value = not switch.value
+
+    @on(Switch.Changed, "#custom")
+    def custom_changed(self, event: Switch.Changed) -> None:
+        self.app.set_custom(event.value)
 
 
 # --- setup --------------------------------------------------------------------
@@ -785,6 +801,176 @@ class AlternativesModal(ModalScreen[tuple | None]):
 # --- API keys -----------------------------------------------------------------
 
 
+class ColumnsModal(ModalScreen[CsvFormat | None]):
+    """Map a custom CSV's headers to roles, with a preview and saved presets."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, path: Path, data: bytes):
+        super().__init__()
+        self.path = path
+        self.data = data
+        self.headers: list[str] = []
+        self.rows: list[list[str]] = []
+
+    def compose(self) -> ComposeResult:
+        store = self.app.formats
+        start = store.last or CsvFormat()
+        delim = next((k for k, v in DELIMITERS.items() if v == start.delimiter), "auto")
+        with VerticalScroll(classes="modal wide"):
+            yield Label(f"Custom CSV columns — {self.path.name}", classes="title")
+            yield Static(
+                "Choose which column of your file holds each item. Designator and Value are required; "
+                "Footprint is needed to know the chip size (0603, C_0805_2012Metric…).",
+                classes="hint",
+            )
+            with Horizontal(classes="presets"):
+                yield Select([(n, n) for n in store.presets], prompt="Presets", id="preset")
+                yield Button("Load", id="preset_load")
+                yield Input(placeholder="preset name", id="preset_name")
+                yield Button("Save preset", id="preset_save")
+                yield Button("Delete", id="preset_delete")
+            with Grid(classes="form"):
+                yield Label("Delimiter")
+                yield Select([(k.capitalize(), k) for k in DELIMITERS], value=delim, allow_blank=False, id="delimiter")
+                yield Label("Header row (line number)")
+                yield Input(str(start.header_row), id="header_row", type="integer")
+                for role, label, required in ROLES:
+                    yield Label(f"{label} *" if required else label)
+                    yield Select([], prompt="— not used —", id=f"col_{role}")
+            yield Label("Preview", classes="section")
+            yield DataTable(id="preview", cursor_type="none")
+            with Horizontal(classes="buttons"):
+                yield Button("Cancel", id="cancel")
+                yield Button("Use columns", id="use", variant="primary")
+
+    def on_mount(self) -> None:
+        self.reread()
+        self.set_columns(prefill(self.headers, self.app.formats, self.layout_format()).columns)
+
+    # --- form <-> CsvFormat
+
+    def layout_format(self) -> CsvFormat:
+        try:
+            header_row = max(1, int(self.query_one("#header_row", Input).value or 1))
+        except ValueError:
+            header_row = 1
+        return CsvFormat({}, DELIMITERS[self.query_one("#delimiter", Select).value], header_row)
+
+    def form_format(self) -> CsvFormat:
+        fmt = self.layout_format()
+        for role, _, _ in ROLES:
+            sel = self.query_one(f"#col_{role}", Select)
+            if not sel.is_blank():
+                fmt.columns[role] = str(sel.value)
+        return fmt
+
+    def set_columns(self, columns: dict[str, str]) -> None:
+        for role, _, _ in ROLES:
+            sel = self.query_one(f"#col_{role}", Select)
+            h = columns.get(role)
+            if h in self.headers:
+                sel.value = h
+            else:
+                sel.clear()
+        self.refresh_preview()
+
+    def reread(self) -> None:
+        """Re-read the headers after the delimiter or header row changed."""
+        fmt = self.layout_format()
+        try:
+            self.headers, self.rows = read_table(self.data, fmt.delimiter, fmt.header_row)
+        except (BomError, UnicodeError) as e:
+            self.headers, self.rows = [], []
+            self.notify(str(e), severity="warning")
+        for role, _, _ in ROLES:
+            sel = self.query_one(f"#col_{role}", Select)
+            old = None if sel.is_blank() else sel.value
+            sel.set_options([(h or f"(column {i + 1})", h) for i, h in enumerate(self.headers)])
+            if old in self.headers:
+                sel.value = old
+
+    def refresh_preview(self) -> None:
+        fmt = self.form_format()
+        t = self.query_one("#preview", DataTable)
+        t.clear(columns=True)
+        used = [(label, self.headers.index(fmt.columns[role])) for role, label, _ in ROLES if role in fmt.columns]
+        if not used:
+            return
+        t.add_columns(*(label for label, _ in used))
+        for raw in self.rows[:5]:
+            t.add_row(*(raw[i] if i < len(raw) else "" for _, i in used))
+
+    # --- events
+
+    @on(Select.Changed, "#delimiter")
+    @on(Input.Changed, "#header_row")
+    def layout_changed(self) -> None:
+        self.reread()
+        if not self.form_format().columns:  # e.g. the header row was wrong until now: guess afresh
+            self.set_columns(prefill(self.headers, self.app.formats, self.layout_format()).columns)
+        self.refresh_preview()
+
+    @on(Select.Changed)
+    def column_changed(self, event: Select.Changed) -> None:
+        if event.select.id and event.select.id.startswith("col_"):
+            self.refresh_preview()
+
+    def _apply(self, fmt: CsvFormat) -> None:
+        self.query_one("#delimiter", Select).value = next((k for k, v in DELIMITERS.items() if v == fmt.delimiter), "auto")
+        self.query_one("#header_row", Input).value = str(fmt.header_row)
+        self.reread()
+        self.set_columns(fmt.columns)
+
+    @on(Button.Pressed, "#preset_load")
+    def preset_load(self) -> None:
+        sel = self.query_one("#preset", Select)
+        if sel.is_blank():
+            self.notify("Choose a preset first", severity="warning")
+            return
+        self._apply(self.app.formats.presets[sel.value])
+        self.query_one("#preset_name", Input).value = str(sel.value)
+
+    @on(Button.Pressed, "#preset_save")
+    def preset_save(self) -> None:
+        name = self.query_one("#preset_name", Input).value.strip()
+        if not name:
+            self.notify("Type a name for the preset", severity="warning")
+            return
+        store = self.app.formats
+        store.presets[name] = self.form_format()
+        save_formats(store)
+        self.query_one("#preset", Select).set_options([(n, n) for n in store.presets])
+        self.query_one("#preset", Select).value = name
+        self.notify(f"Saved preset '{name}'")
+
+    @on(Button.Pressed, "#preset_delete")
+    def preset_delete(self) -> None:
+        sel = self.query_one("#preset", Select)
+        if sel.is_blank():
+            return
+        name = str(sel.value)
+        store = self.app.formats
+        store.presets.pop(name, None)
+        save_formats(store)
+        sel.set_options([(n, n) for n in store.presets])
+        self.notify(f"Deleted preset '{name}'")
+
+    @on(Button.Pressed, "#use")
+    def use(self) -> None:
+        fmt = self.form_format()
+        try:
+            parse_bom(self.data, self.path.name, fmt)
+        except BomError as e:
+            self.notify(str(e), severity="error")
+            return
+        self.dismiss(fmt)
+
+    @on(Button.Pressed, "#cancel")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class KeysModal(ModalScreen[None]):
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
@@ -857,10 +1043,16 @@ class KeysModal(ModalScreen[None]):
 
 class CbaPickApp(App):
     TITLE = "cbapick4me"
-    SUB_TITLE = "EasyEDA BOM part picker"
+    SUB_TITLE = "BOM part picker for EasyEDA & more"
     CSS = """
     #open { padding: 1 2; }
     #tree { height: 1fr; margin-top: 1; }
+    #mode { height: auto; margin: 1 0; }
+    #mode Label { padding: 1 1; }
+    .presets { height: auto; margin-bottom: 1; }
+    .presets Select { width: 30; }
+    .presets Input { width: 24; }
+    #preview { height: auto; max-height: 9; }
     #setup { padding: 1 2; }
     #bominfo { margin-bottom: 1; }
     .section { text-style: bold; color: $accent; margin-top: 1; }
@@ -881,17 +1073,23 @@ class CbaPickApp(App):
     #alts { height: auto; max-height: 24; }
     """
 
-    def __init__(self, session: Session, start: Path | None = None):
+    def __init__(self, session: Session, start: Path | None = None, custom: bool | None = None):
         super().__init__()
         self.session = session
         self.start = start
+        self.formats = load_formats()
+        # Custom CSV mode: ask for the columns when opening, unless the command line already set them.
+        self.custom = self.formats.custom if custom is None else custom
         self.theme_watcher = ThemeWatcher()
         self._theme_serial = 0
 
     def on_mount(self) -> None:
         self.follow_desktop_theme()
         self.set_interval(2.0, self.follow_desktop_theme)
-        if self.start:
+        if self.start and self.needs_mapping():
+            self.push_screen(OpenScreen())
+            self.open_bom(self.start)
+        elif self.start:
             if not self.open_bom(self.start):
                 self.push_screen(OpenScreen())
         else:
@@ -930,7 +1128,40 @@ class CbaPickApp(App):
         if old:
             self.unregister_theme(old)
 
+    def set_custom(self, on: bool) -> None:
+        self.custom = on
+        self.formats.custom = on
+        save_formats(self.formats)
+
+    def needs_mapping(self) -> bool:
+        return self.custom and self.session.csv_format is None
+
     def open_bom(self, path: Path) -> bool:
+        """Open a BOM; in custom CSV mode ask for its columns first (returns False if that's pending)."""
+        if self.needs_mapping():
+            try:
+                data = path.read_bytes()
+            except OSError as e:
+                self.notify(f"Could not open {path}: {e}", severity="error")
+                return False
+
+            def mapped(fmt: CsvFormat | None) -> None:
+                if fmt is None:
+                    return
+                self.formats.last = fmt
+                self.formats.custom = True
+                save_formats(self.formats)
+                self.session.csv_format = fmt
+                try:
+                    self.open_bom(path)
+                finally:
+                    # Ask again for the next BOM, pre-filled with this mapping.
+                    self.session.csv_format = None
+
+            self.push_screen(ColumnsModal(path, data), mapped)
+            return False
+        if not self.custom:
+            self.session.csv_format = None
         try:
             self.session.load_path(path)
         except (OSError, BomError, UnicodeError) as e:
@@ -947,9 +1178,11 @@ class CbaPickApp(App):
 
 
 def run_tui(a: argparse.Namespace) -> int:
-    from ..headless import apply_spec_args
+    from ..headless import apply_spec_args, format_from_args, wants_custom
 
     session = Session()
     apply_spec_args(session, a)
-    CbaPickApp(session, Path(a.bom) if a.bom else None).run()
+    store = load_formats()
+    session.csv_format = format_from_args(a, store)
+    CbaPickApp(session, Path(a.bom) if a.bom else None, custom=wants_custom(a, store)).run()
     return 0

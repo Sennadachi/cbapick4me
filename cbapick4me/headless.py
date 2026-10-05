@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
-from .core.bom import BomError
+from .core.bom import BomError, guess_columns, read_table
+from .core.formats import DELIMITERS, ROLE_NAMES, CsvFormat, FormatStore, load_formats
 from .core.padding import ALREADY_MET, UNREACHABLE
 from .core.parse import Kind, format_value
 from .core.picker import total_cost, unique_keys
@@ -45,6 +47,74 @@ def add_spec_args(p: argparse.ArgumentParser) -> None:
         metavar="DES,DES",
         help="headless: lines to increase to reach --pad-to, by any of their designators (repeatable)",
     )
+
+
+def add_format_args(p: argparse.ArgumentParser) -> None:
+    g = p.add_argument_group("BOM format (default: EasyEDA, columns recognised by name)")
+    g.add_argument(
+        "--format",
+        choices=["easyeda", "custom"],
+        help="custom = map your EDA tool's CSV headers yourself (default: whatever you used last)",
+    )
+    g.add_argument("--preset", metavar="NAME", help="use a saved custom CSV preset (implies --format custom)")
+    g.add_argument(
+        "--col",
+        action="append",
+        default=[],
+        metavar="ROLE=HEADER",
+        help=f"custom CSV column, e.g. designator=Reference (repeatable; implies --format custom). Roles: {', '.join(ROLE_NAMES)}",
+    )
+    g.add_argument("--delimiter", choices=list(DELIMITERS), help="custom CSV delimiter (default auto)")
+    g.add_argument("--header-row", type=int, metavar="N", help="custom CSV: line number of the header row (default 1)")
+
+
+def wants_custom(a: argparse.Namespace, store: FormatStore) -> bool:
+    """Whether this run starts in custom CSV mode: flags first, then the remembered toggle."""
+    if a.preset or a.col:
+        return True
+    if a.format:
+        return a.format == "custom"
+    return store.custom
+
+
+def format_from_args(a: argparse.Namespace, store: FormatStore, bom: Path | None = None) -> CsvFormat | None:
+    """The CsvFormat the flags ask for, or None for EasyEDA / for "let the UI ask".
+
+    With custom mode on but no --col/--preset, headless uses the last mapping, or
+    guesses from the file's headers if there is none. The interactive UIs get None
+    then (when no flag pins the format) and show their mapping form instead.
+    """
+    if not wants_custom(a, store):
+        return None
+    if a.preset:
+        if a.preset not in store.presets:
+            known = ", ".join(store.presets) or "none saved yet"
+            raise ValueError(f"No preset called '{a.preset}' (presets: {known})")
+        fmt = store.presets[a.preset]
+        fmt = CsvFormat(dict(fmt.columns), fmt.delimiter, fmt.header_row)
+    elif a.col:
+        cols = {}
+        for text in a.col:
+            role, sep, header = text.partition("=")
+            role = role.strip().lower()
+            if not sep or role not in ROLE_NAMES:
+                raise ValueError(f"--col {text!r}: expected ROLE=HEADER with ROLE one of {', '.join(ROLE_NAMES)}")
+            cols[role] = header.strip()
+        fmt = CsvFormat(cols)
+    elif not a.headless:
+        return None
+    elif store.last:
+        fmt = CsvFormat(dict(store.last.columns), store.last.delimiter, store.last.header_row)
+    else:
+        fmt = CsvFormat()
+    if a.delimiter:
+        fmt.delimiter = DELIMITERS[a.delimiter]
+    if a.header_row:
+        fmt.header_row = a.header_row
+    if not fmt.columns and bom is not None:
+        headers, _ = read_table(Path(bom).read_bytes(), fmt.delimiter, fmt.header_row)
+        fmt.columns = guess_columns(headers)
+    return fmt
 
 
 def apply_spec_args(session: Session, a: argparse.Namespace) -> None:
@@ -88,6 +158,7 @@ def run(a: argparse.Namespace) -> int:
         return 2
     session = Session()
     try:
+        session.csv_format = format_from_args(a, load_formats(), Path(a.bom))
         session.load_path(a.bom)
         apply_spec_args(session, a)
         apply_overrides(session, a.override)

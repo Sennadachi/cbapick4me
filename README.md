@@ -1,10 +1,12 @@
 # cbapick4me
 
-Picks specific capacitors and resistors for an **EasyEDA BOM** from **DigiKey**.
+Picks specific capacitors and resistors for an **EasyEDA BOM** from **DigiKey**. BOMs from other EDA tools work too: KiCad, Altium, Eagle, or any CSV.
 
 Your schematic says "10u, C1206" and "4.7k, R0603". cbapick4me turns those into real DigiKey part numbers: the cheapest parts in stock that match the value, chip size, dielectric, voltage, power and tolerance you ask for. It writes `<bom>_picked4u.csv`, ready to upload to DigiKey's BOM Manager.
 
-1. **Load** the BOM CSV exported from EasyEDA Standard or EasyEDA Pro.
+1. **Load** the BOM CSV.
+   - EasyEDA Standard and Pro exports are recognised automatically. This is the default.
+   - For any other EDA tool, switch on **Custom CSV** and choose which column holds the designator, value, footprint and so on. Your choices are remembered, and you can save them as named presets. See [Other EDA tools](docs/usage.md#other-eda-tools-custom-csv).
 2. **Set blanket specs**:
    - capacitors: dielectric (X7R/X5R/C0G…), minimum voltage, tolerance
    - resistors: minimum power, tolerance
@@ -45,10 +47,10 @@ Then:
 - [Windows install](docs/windows.md)
 - [Linux / macOS install](docs/linux.md) (pipx, plus the optional `cba2pick` fuzzy-finder launcher)
 - [Getting a DigiKey API key](docs/api-key.md), and keeping it safe
-- [How to use it](docs/usage.md): GUI, terminal UI, command line, how parts are chosen, basket padding, output columns
+- [How to use it](docs/usage.md): GUI, terminal UI, command line, [other EDA tools (Custom CSV)](docs/usage.md#other-eda-tools-custom-csv), how parts are chosen, basket padding, output columns
 - [Hosting it as a website](docs/hosting.md) (Docker)
 - [Development and releases](docs/development.md)
 
 ## License
 
-[MIT](LICENSE). This project isn't affiliated with DigiKey or EasyEDA. Check the parts it picks before you order.
+[MIT](LICENSE). This project isn't affiliated with DigiKey, EasyEDA or any other EDA vendor. Check the parts it picks before you order.

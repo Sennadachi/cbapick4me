@@ -12,6 +12,7 @@ from pathlib import Path
 from .bom import Bom, load_bom, parse_bom
 from .cache import SearchCache
 from .config import Config, load_config
+from .formats import CsvFormat
 from . import padding
 from .padding import PadOutcome
 from .parse import Kind
@@ -46,6 +47,8 @@ class Session:
         self.cfg = cfg or load_config()
         self.settings = settings or Settings()
         self.bom: Bom | None = None
+        # None = EasyEDA (columns recognised by name); set for a custom CSV mapping.
+        self.csv_format: CsvFormat | None = None
         self.source_path: Path | None = None
         self.results: list[LineResult] = []
         # Non-C/R rows priced by MPN; only filled when basket padding is on.
@@ -57,13 +60,13 @@ class Session:
 
     def load_path(self, path: str | Path) -> Bom:
         self.source_path = Path(path)
-        self.bom = load_bom(path)
+        self.bom = load_bom(path, self.csv_format)
         self._reset()
         return self.bom
 
     def load_bytes(self, data: bytes, name: str) -> Bom:
         self.source_path = None
-        self.bom = parse_bom(data, name)
+        self.bom = parse_bom(data, name, self.csv_format)
         self._reset()
         return self.bom
 

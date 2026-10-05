@@ -1,8 +1,10 @@
-"""Reading and writing EasyEDA BOM CSV files.
+"""Reading and writing BOM CSV files.
 
 EasyEDA Standard exports UTF-16LE, tab-separated, fully quoted. EasyEDA Pro
-exports UTF-8 (often with a BOM), comma-separated. Both are handled here, and
-everything works on bytes so the web front end can parse uploads in memory.
+exports UTF-8 (often with a BOM), comma-separated. Both are recognised by
+header name automatically; any other tool's CSV can be read with a CsvFormat
+that says which header holds what. Everything works on bytes so the web front
+end can parse uploads in memory.
 """
 
 from __future__ import annotations
@@ -11,8 +13,12 @@ import csv
 import io
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .parse import Kind, classify, parse_footprint, parse_value, split_designators
+
+if TYPE_CHECKING:
+    from .formats import CsvFormat
 
 # Role -> accepted header names (lower-case, first match wins).
 COLUMN_ALIASES: dict[str, list[str]] = {
@@ -85,15 +91,14 @@ def decode(data: bytes) -> str:
         return data.decode("cp1252")
 
 
-def _sniff_delimiter(text: str) -> str:
-    first = text.split("\n", 1)[0]
+def _sniff_delimiter(first: str) -> str:
     try:
         return csv.Sniffer().sniff(first, delimiters=",\t;").delimiter
     except csv.Error:
         return "\t" if "\t" in first else ","
 
 
-def _map_columns(headers: list[str]) -> dict[str, str]:
+def guess_columns(headers: list[str]) -> dict[str, str]:
     lowered = {h.strip().lower(): h for h in headers}
     cols: dict[str, str] = {}
     for role, aliases in COLUMN_ALIASES.items():
@@ -104,20 +109,46 @@ def _map_columns(headers: list[str]) -> dict[str, str]:
     return cols
 
 
-def parse_bom(data: bytes, name: str) -> Bom:
+def read_table(data: bytes, delimiter: str = "", header_row: int = 1) -> tuple[list[str], list[list[str]]]:
+    """Decode a CSV and return (headers, data rows). header_row is 1-based; blank delimiter = sniff."""
     text = decode(data)
     if not text.strip():
         raise BomError("BOM file is empty")
-    reader = csv.reader(io.StringIO(text, newline=""), delimiter=_sniff_delimiter(text))
+    lines = text.split("\n")  # not splitlines(): that also splits on rarer separators inside fields
+    if header_row < 1 or header_row > len(lines):
+        raise BomError(f"Header row {header_row} is past the end of the file ({len(lines)} lines)")
+    body = "\n".join(lines[header_row - 1 :])
+    delimiter = delimiter or _sniff_delimiter(lines[header_row - 1].rstrip("\r"))
+    reader = csv.reader(io.StringIO(body, newline=""), delimiter=delimiter)
     table = [r for r in reader if any(c.strip() for c in r)]
-    headers = [h.strip() for h in table[0]]
-    cols = _map_columns(headers)
-    for required in ("designator", "value"):
-        if required not in cols:
-            raise BomError(f"Could not find a {required} column in headers: {headers}")
+    if not table:
+        raise BomError(f"No header found at row {header_row}")
+    return [h.strip() for h in table[0]], table[1:]
+
+
+def parse_bom(data: bytes, name: str, fmt: CsvFormat | None = None) -> Bom:
+    """Parse a BOM. fmt=None recognises columns by header name (EasyEDA and similar)."""
+    if fmt is None:
+        headers, body = read_table(data)
+        cols = guess_columns(headers)
+        for required in ("designator", "value"):
+            if required not in cols:
+                raise BomError(
+                    f"Could not find a {required} column in headers: {headers}. "
+                    "If this isn't an EasyEDA BOM, switch on Custom CSV and choose the columns."
+                )
+    else:
+        headers, body = read_table(data, fmt.delimiter, fmt.header_row)
+        cols = {role: h for role, h in fmt.columns.items() if h}
+        for role, h in cols.items():
+            if h not in headers:
+                raise BomError(f"Column '{h}' ({role}) is not in this file. Headers found: {headers}")
+        for required in ("designator", "value"):
+            if required not in cols:
+                raise BomError(f"Choose which column holds the {required}")
 
     bom = Bom(name=name, headers=headers, columns=cols)
-    for i, raw in enumerate(table[1:]):
+    for i, raw in enumerate(body):
         raw = raw + [""] * (len(headers) - len(raw))
         fields = dict(zip(headers, raw))
         designators = split_designators(fields[cols["designator"]])
@@ -146,9 +177,9 @@ def parse_bom(data: bytes, name: str) -> Bom:
     return bom
 
 
-def load_bom(path: str | Path) -> Bom:
+def load_bom(path: str | Path, fmt: CsvFormat | None = None) -> Bom:
     p = Path(path)
-    return parse_bom(p.read_bytes(), p.name)
+    return parse_bom(p.read_bytes(), p.name, fmt)
 
 
 def render_csv(headers: list[str], rows: list[dict[str, str]]) -> bytes:

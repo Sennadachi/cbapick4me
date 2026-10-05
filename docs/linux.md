@@ -49,7 +49,7 @@ The keys are stored in `~/.config/cbapick4me/config.toml`, readable only by you 
 
 If you prefer environment variables, for example in scripts or CI, set `DIGIKEY_CLIENT_ID`, `DIGIKEY_CLIENT_SECRET` and `DIGIKEY_SITE`. They override the config file. A `.env` file in the current directory also works; see [`.env.example`](../.env.example). **Never commit `.env`.**
 
-Next: [how to use it](usage.md#terminal-ui-linux).
+Next: [how to use it](usage.md#terminal-ui-linux). Not using EasyEDA? Press `Ctrl+T` on the Open screen for [Custom CSV](usage.md#other-eda-tools-custom-csv).
 
 ## Optional: `cba2pick` fuzzy-finder launcher
 

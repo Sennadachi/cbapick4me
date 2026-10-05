@@ -22,7 +22,8 @@ from pathlib import Path
 
 from nicegui import app, native, run, ui
 
-from ..core.bom import BomError
+from ..core.bom import BomError, read_table
+from ..core.formats import DELIMITERS, ROLES, CsvFormat, FormatStore, load_formats, prefill, save_formats
 from ..core.config import SITE_CURRENCY, Config, load_config, save_config
 from ..core.padding import ALREADY_MET, UNREACHABLE
 from ..core.parse import Kind, format_value
@@ -150,7 +151,7 @@ def build_page(web: bool, limiter: RateLimiter | None, max_rows: int) -> None:
     # ---------------------------------------------------------------- header
     with ui.header().classes("items-center justify-between"):
         ui.label("cbapick4me").classes("text-xl font-bold")
-        ui.label("EasyEDA BOM part picker").classes("opacity-80")
+        ui.label("BOM part picker for EasyEDA & more").classes("opacity-80")
         ui.space()
         ui.button("API keys", icon="key", on_click=lambda: keys_dialog.open()).props("flat color=white")
 
@@ -229,17 +230,57 @@ def build_page(web: bool, limiter: RateLimiter | None, max_rows: int) -> None:
         with ui.stepper().props("vertical animated").classes("w-full") as stepper:
             # ---- step 1: BOM
             with ui.step("BOM"):
-                ui.label("Export the BOM from EasyEDA (Standard or Pro) and open it here.")
+                # Custom CSV mappings are remembered on the desktop only; a hosted site keeps them per tab.
+                store = load_formats() if not web else FormatStore()
+                start_custom = store.custom if _START_CUSTOM is None or web else _START_CUSTOM
+                pending: dict = {"data": b"", "name": "", "path": None, "headers": [], "rows": []}
+
+                with ui.row().classes("items-center gap-4"):
+                    mode = ui.toggle({"easyeda": "EasyEDA", "custom": "Custom CSV"}, value="custom" if start_custom else "easyeda")
+                    mode_hint = ui.label("").classes("text-sm opacity-70")
+
                 bom_info = ui.label("").classes("font-medium")
+
+                def custom() -> bool:
+                    return mode.value == "custom"
+
+                def mode_changed(remember: bool = True) -> None:
+                    mode_hint.text = (
+                        "Any EDA tool's CSV: you choose which column holds what."
+                        if custom()
+                        else "Export the BOM from EasyEDA (Standard or Pro) and open it here."
+                    )
+                    if not custom():
+                        mapping_card.set_visibility(False)
+                    if remember and not web:
+                        store.custom = custom()
+                        save_formats(store)
 
                 async def on_upload(e) -> None:
                     try:
                         data = await e.file.read()
-                        load(data, e.file.name)
+                        receive(data, e.file.name)
                     except Exception as ex:  # parsing errors shown to user
                         ui.notify(f"Could not read BOM: {ex}", type="negative")
                     finally:
                         upload.reset()
+
+                def receive(data: bytes, name: str, path: Path | None = None) -> None:
+                    """A file arrived: load it now (EasyEDA) or show the column mapping first (custom)."""
+                    if not custom():
+                        session.csv_format = None
+                        load(data, name, path)
+                        return
+                    if path:
+                        data = path.read_bytes()
+                    pending.update(data=data, name=path.name if path else name, path=path)
+                    start = store.last or CsvFormat()
+                    sel_delim.value = next((k for k, v in DELIMITERS.items() if v == start.delimiter), "auto")
+                    in_header.value = start.header_row
+                    reread()
+                    set_columns(prefill(pending["headers"], store, layout_format()).columns)
+                    mapping_title.text = f"Columns of {pending['name']}"
+                    mapping_card.set_visibility(True)
 
                 def load(data: bytes, name: str, path: Path | None = None) -> None:
                     if path:
@@ -279,11 +320,133 @@ def build_page(web: bool, limiter: RateLimiter | None, max_rows: int) -> None:
                         )
                         if files:
                             try:
-                                load(b"", "", Path(files[0]))
+                                receive(b"", "", Path(files[0]))
                             except Exception as ex:
                                 ui.notify(f"Could not read BOM: {ex}", type="negative")
 
                     ui.button("Open file…", icon="folder_open", on_click=native_open)
+
+                # ---- custom CSV column mapping
+                with ui.card().classes("w-full") as mapping_card:
+                    mapping_title = ui.label("").classes("text-lg font-bold")
+                    ui.label(
+                        "Choose which column holds each item. Designator and Value are required; "
+                        "Footprint is needed to know the chip size (0603, C_0805_2012Metric…)."
+                    ).classes("text-sm opacity-70")
+                    with ui.row().classes("items-end gap-2 w-full"):
+                        sel_preset = ui.select(list(store.presets), label="Presets").classes("w-48")
+                        ui.button("Load", on_click=lambda: preset_load()).props("outline")
+                        in_preset = ui.input("Preset name").classes("w-48")
+                        ui.button("Save preset", on_click=lambda: preset_save()).props("outline")
+                        ui.button("Delete", on_click=lambda: preset_delete()).props("flat")
+                    with ui.row().classes("items-end gap-4"):
+                        sel_delim = ui.select({k: k.capitalize() for k in DELIMITERS}, value="auto", label="Delimiter").classes("w-40")
+                        in_header = ui.number("Header row (line no.)", value=1, min=1, step=1, format="%d").classes("w-48").mark("header_row")
+                    with ui.grid(columns="repeat(auto-fit, minmax(14rem, 1fr))").classes("w-full gap-2"):
+                        role_selects = {
+                            role: ui.select([], label=f"{label} *" if required else label, clearable=True).classes("w-full")
+                            for role, label, required in ROLES
+                        }
+                    preview = ui.table(columns=[], rows=[]).props("dense flat").classes("w-full")
+                    with ui.row():
+                        ui.button("Use these columns", icon="check", on_click=lambda: use_columns())
+                mapping_card.set_visibility(False)
+
+                def layout_format() -> CsvFormat:
+                    return CsvFormat({}, DELIMITERS[sel_delim.value or "auto"], max(1, int(in_header.value or 1)))
+
+                def form_format() -> CsvFormat:
+                    fmt = layout_format()
+                    fmt.columns = {role: sel.value for role, sel in role_selects.items() if sel.value}
+                    return fmt
+
+                def reread() -> None:
+                    fmt = layout_format()
+                    try:
+                        pending["headers"], pending["rows"] = read_table(pending["data"], fmt.delimiter, fmt.header_row)
+                    except (BomError, UnicodeError) as ex:
+                        pending["headers"], pending["rows"] = [], []
+                        ui.notify(str(ex), type="warning")
+                    headers = pending["headers"]
+                    for sel in role_selects.values():
+                        old = sel.value
+                        sel.set_options([h for h in headers if h], value=old if old in headers else None)
+                    refresh_preview()
+
+                def set_columns(columns: dict[str, str]) -> None:
+                    for role, sel in role_selects.items():
+                        h = columns.get(role)
+                        sel.value = h if h in pending["headers"] else None
+                    refresh_preview()
+
+                def refresh_preview() -> None:
+                    fmt = form_format()
+                    headers = pending["headers"]
+                    used = [(role, label, headers.index(fmt.columns[role])) for role, label, _ in ROLES if fmt.columns.get(role) in headers]
+                    preview.columns = [{"name": role, "label": label, "field": role, "align": "left"} for role, label, _ in used]
+                    preview.rows = [
+                        {"_i": n, **{role: raw[i] if i < len(raw) else "" for role, _, i in used}} for n, raw in enumerate(pending["rows"][:5])
+                    ]
+                    preview.update()
+
+                def apply_format(fmt: CsvFormat) -> None:
+                    sel_delim.value = next((k for k, v in DELIMITERS.items() if v == fmt.delimiter), "auto")
+                    in_header.value = fmt.header_row
+                    reread()
+                    set_columns(fmt.columns)
+
+                def preset_load() -> None:
+                    if not sel_preset.value:
+                        ui.notify("Choose a preset first", type="warning")
+                        return
+                    apply_format(store.presets[sel_preset.value])
+                    in_preset.value = sel_preset.value
+
+                def preset_save() -> None:
+                    name = (in_preset.value or "").strip()
+                    if not name:
+                        ui.notify("Type a name for the preset", type="warning")
+                        return
+                    store.presets[name] = form_format()
+                    if not web:
+                        save_formats(store)
+                    sel_preset.set_options(list(store.presets), value=name)
+                    ui.notify(f"Saved preset '{name}'")
+
+                def preset_delete() -> None:
+                    name = sel_preset.value
+                    if not name:
+                        return
+                    store.presets.pop(name, None)
+                    if not web:
+                        save_formats(store)
+                    sel_preset.set_options(list(store.presets), value=None)
+                    ui.notify(f"Deleted preset '{name}'")
+
+                def use_columns() -> None:
+                    fmt = form_format()
+                    session.csv_format = fmt
+                    try:
+                        load(pending["data"], pending["name"], pending["path"])
+                    except Exception as ex:
+                        ui.notify(f"Could not read BOM: {ex}", type="negative")
+                        return
+                    store.last = fmt
+                    if not web:
+                        save_formats(store)
+                    mapping_card.set_visibility(False)
+
+                def layout_changed() -> None:
+                    reread()
+                    if not form_format().columns:  # e.g. the header row was wrong until now: guess afresh
+                        set_columns(prefill(pending["headers"], store, layout_format()).columns)
+
+                sel_delim.on_value_change(lambda: layout_changed())
+                in_header.on_value_change(lambda: layout_changed())
+                for sel in role_selects.values():
+                    sel.on_value_change(lambda: refresh_preview())
+                mode.on_value_change(lambda: mode_changed())
+                mode_changed(remember=False)
 
             # ---- step 2: specs
             with ui.step("Specs"):
@@ -777,6 +940,10 @@ def build_page(web: bool, limiter: RateLimiter | None, max_rows: int) -> None:
         alt_dialog.open()
 
 
+# Starting value of the EasyEDA / Custom CSV toggle from --format/--col/--preset (None = remembered).
+_START_CUSTOM: bool | None = None
+
+
 def _register(web: bool) -> None:
     limiter = RateLimiter(_env_int("CBAPICK_RATE_PER_HOUR", 20)) if web else None
     max_rows = _env_int("CBAPICK_MAX_ROWS", 500)
@@ -809,6 +976,11 @@ def serve(a: argparse.Namespace | None = None) -> None:
 
 def desktop(a: argparse.Namespace | None = None) -> None:
     """Native window (pywebview). Falls back to opening the local browser."""
+    global _START_CUSTOM
+    if a is not None:
+        from ..headless import wants_custom
+
+        _START_CUSTOM = wants_custom(a, load_formats())
     _register(web=False)
     use_native = importlib.util.find_spec("webview") is not None
     if use_native:

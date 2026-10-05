@@ -35,7 +35,7 @@ The first start takes a few seconds while the exe unpacks itself.
 
 Your settings are saved in `%APPDATA%\cbapick4me\config.toml`. That file contains your secret, so don't share it or send it to anyone.
 
-Next: [how to use it](usage.md#gui-windows).
+Next: [how to use it](usage.md#gui-windows). Not using EasyEDA? Switch the BOM step to [Custom CSV](usage.md#other-eda-tools-custom-csv).
 
 ## Updating
 

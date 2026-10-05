@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cbapick4me"
-version = "0.1.0"
-description = "Pick specific capacitors and resistors for an EasyEDA BOM from DigiKey"
+version = "0.2.0"
+description = "Pick specific capacitors and resistors for an EasyEDA (or any CSV) BOM from DigiKey"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

@@ -1,6 +1,7 @@
 # Using cbapick4me
 
 - [Export the BOM from EasyEDA](#1-export-the-bom-from-easyeda)
+- [Other EDA tools (Custom CSV)](#other-eda-tools-custom-csv)
 - [GUI (Windows)](#gui-windows)
 - [Terminal UI (Linux)](#terminal-ui-linux)
 - [Command line / headless](#command-line--headless)
@@ -17,11 +18,96 @@ You need a [DigiKey API key](api-key.md) entered first.
 
 Either format works as exported; you don't need to change anything. Capacitors are recognised by `C` designators and resistors by `R` designators. The tool reads each part's value from the **Name/Value** column and its chip size from the **Footprint** column, for example `C0603` or `R0805`.
 
+Using KiCad, Altium, Eagle or another tool? See [Other EDA tools](#other-eda-tools-custom-csv).
+
+## Other EDA tools (Custom CSV)
+
+EasyEDA is the default. For any other tool's BOM, switch on **Custom CSV** and tell cbapick4me which column holds what.
+
+**What your BOM needs**
+- One row per part or group of parts. Designators can be grouped in one cell, for example `C1,C2,C5` or `R1 R2`.
+- Capacitors must have designators starting with **C**, and resistors with **R**, for example `C12` or `R3`. Every other line, such as ICs and connectors, is kept in the output unchanged.
+- The **footprint** must contain the chip size. `0603`, `C0603`, `R_0805_2012Metric` and `Capacitor_SMD:C_0603_1608Metric` all work.
+- Values such as `100n`, `0.1uF`, `4k7`, `4.7k` and `10R` are all understood.
+
+**Columns you can map**
+
+| Item | Required | Example headers |
+|---|---|---|
+| Designator | **yes** | Reference, Designator, RefDes |
+| Value | **yes** | Value, Comment |
+| Footprint / package | needed for C/R | Footprint, Package |
+| Quantity | no. If left out, it's the number of designators | Qty, Quantity |
+| Manufacturer part, Manufacturer, Supplier part, Supplier, Price, Line no. | no | MPN, Mfr, DigiKey PN… |
+
+The optional columns are filled in the output for picked parts. With basket padding on, other lines are priced by their manufacturer part.
+
+**Other settings**
+- **Delimiter:** comma, tab, semicolon, or auto-detect.
+- **Header row:** the line number that holds the column names. Some tools write a title or date above the table. In KiCad's default export the header is on line 1. If your file has 2 lines of preamble, the header row is 3.
+
+**Typical mappings**
+
+| Tool | Designator | Value | Footprint | Quantity |
+|---|---|---|---|---|
+| KiCad (BOM export / Symbol Fields Table) | Reference | Value | Footprint | Qty |
+| Altium | Designator | Comment | Footprint | Quantity |
+| Eagle / Fusion Electronics | Parts | Value | Package | Qty |
+
+Your exact headers may differ. The mapping form shows a preview of the first rows, so you can check before you continue.
+
+### In the GUI
+1. On the **BOM** step, switch the toggle from **EasyEDA** to **Custom CSV**.
+2. Drop or open your CSV. A **Columns** card appears with:
+   - the column choices, pre-filled by guessing from the header names
+   - **Delimiter** and **Header row** settings
+   - a live preview
+3. Fix anything that's wrong, then click **Use these columns**.
+4. **Presets:** type a name and click **Save preset**. Next time, pick it from **Presets** and click **Load**. **Delete** removes a preset.
+
+### In the terminal UI
+1. On the Open screen, press **Ctrl+T**, or click the **Custom CSV columns** switch.
+2. Open your file. A **Custom CSV columns** dialog asks for:
+   - the delimiter
+   - the header row
+   - a column for each item
+   - presets: **Load**, **Save preset**, **Delete**
+
+   The preview underneath updates as you choose.
+3. Choose **Use columns**.
+
+### On the command line
+
+```bash
+# map the columns directly
+cbapick4me --headless board.csv --header-row 3 \
+           --col designator=Reference --col value=Value --col footprint=Footprint --col quantity=Qty
+# use a preset you saved in the GUI or TUI
+cbapick4me --headless board.csv --preset KiCad
+# --col / --preset also work with the TUI: it skips the dialog
+cbapick4me board.csv --preset KiCad
+# force EasyEDA mode for one run, even if Custom CSV is switched on
+cbapick4me --format easyeda BOM.csv
+```
+
+If Custom CSV is switched on and you give no `--col` or `--preset`, headless mode uses the mapping you used last.
+
+### What's remembered
+- Whether Custom CSV is on.
+- The last mapping you used. It's pre-filled the next time, as long as the file has the same headers; otherwise the columns are guessed by name.
+- Your named presets.
+
+They're stored in `bom_formats.toml` next to your API keys' `config.toml`, but in a separate file, so it's safe to share:
+- Windows: `%APPDATA%\cbapick4me\bom_formats.toml`
+- Linux: `~/.config/cbapick4me/bom_formats.toml`
+
+On the [hosted website](hosting.md), presets and mappings only last until the browser tab is closed.
+
 ## GUI (Windows)
 
 Double-click the exe on Windows. On Linux or macOS, run `cbapick4me --gui`. The window walks you through these steps:
 
-1. **BOM.** Drop the CSV onto the box, or click **Open file…**. It shows how many capacitors and resistors it found; everything else is kept as-is.
+1. **BOM.** Leave the toggle on **EasyEDA**, or switch it to **Custom CSV** for [other tools](#other-eda-tools-custom-csv). Drop the CSV onto the box, or click **Open file…**. It shows how many capacitors and resistors it found; everything else is kept as-is.
 2. **Specs.** Set the blanket rules that apply to every part unless you add an exception:
    - Number of boards. All quantities are multiplied by this.
    - Capacitors: dielectric (X7R, X5R, C0G…), minimum rated voltage, maximum tolerance.
@@ -54,6 +140,7 @@ The bottom bar always shows the keys for the current screen.
 |---|---|---|
 | Any | `Ctrl+K` | API keys |
 | **Open** | type a path + `Enter`, or select in the tree | Open the BOM |
+| | `Ctrl+T` | Custom CSV columns on/off ([other EDA tools](#other-eda-tools-custom-csv)) |
 | **Setup** (blanket specs) | `Tab` / `Shift+Tab` | Move between fields |
 | | `Ctrl+N` | Next: review |
 | | `Ctrl+O` | Open a different BOM |
@@ -102,6 +189,7 @@ cbapick4me --help                                # every option
 | `--allow-nearest` | substitute the nearest E96/E24 value for non-standard resistors |
 | `--cheap-threshold` / `--spare-budget` / `--stock-factor` | see [How parts are chosen](#how-parts-are-chosen) |
 | `--pad-to AMOUNT` / `--pad DES,DES` | see [Basket padding](#basket-padding) |
+| `--format easyeda\|custom`, `--col ROLE=HEADER`, `--preset NAME`, `--delimiter`, `--header-row N` | BOMs from other EDA tools; see [Custom CSV](#other-eda-tools-custom-csv) |
 
 ## How parts are chosen
 

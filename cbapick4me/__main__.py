@@ -13,11 +13,11 @@ import argparse
 import sys
 
 from . import __version__
-from .headless import add_spec_args
+from .headless import add_format_args, add_spec_args
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cbapick4me", description="Pick specific capacitors and resistors for an EasyEDA BOM.")
+    p = argparse.ArgumentParser(prog="cbapick4me", description="Pick specific capacitors and resistors for an EasyEDA (or any CSV) BOM.")
     p.add_argument("bom", nargs="?", help="EasyEDA BOM CSV")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--tui", action="store_true", help="terminal user interface (default on Linux/macOS)")
@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, help="--serve/--gui: port (env CBAPICK_PORT, default 8080)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     add_spec_args(p)
+    add_format_args(p)
     return p
 
 
